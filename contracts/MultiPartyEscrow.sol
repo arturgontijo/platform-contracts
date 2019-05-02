@@ -62,11 +62,11 @@ contract MultiPartyEscrow {
         return true;
     }
 
-    function depositR(address sender, uint256 value)
+    function deposit(address sender, uint256 value)
     public
     returns(bool)
     {
-        require(token.transferFrom(sender, this, value), "Unable to transfer token to the contract");
+        require(token.transferFrom(sender, this, value), "[depositByThirdParty] Unable to transfer token to the contract");
         balances[sender] = balances[sender].add(value);
         emit DepositFunds(sender, value);
         return true;
@@ -122,21 +122,20 @@ contract MultiPartyEscrow {
         return true;
     }
 
-    function openChannelByThirdParty(address signer, address recipient, bytes32 groupId, uint256 value, uint256 expiration, uint256 fees, uint256 messageNonce, bytes memory signature)
+    function openChannelByThirdParty(address signer, address recipient, bytes32 groupId, uint256 value, uint256 expiration, uint256 fee, uint256 messageNonce, bytes memory signature)
     public
     returns(bool)
     {
-        require(balances[signer] >= value + fees, "Insufficient funds at Signer MPE wallet.");
-        require(signer != address(0), "Signet is the Contract's Owner.");
+        require(balances[signer] >= value + fee, "Insufficient funds at Signer MPE wallet.");
+        require(signer != address(0), "Signer is the Contract's Owner.");
 
         // compose the message which was signed
-        bytes32 message = prefixed(keccak256(abi.encodePacked(this, msg.sender, signer, recipient, groupId, value, expiration, fees, messageNonce)));
+        bytes32 message = prefixed(keccak256(abi.encodePacked(this, msg.sender, signer, recipient, groupId, value, expiration, fee, messageNonce)));
 
         require(checkSignature(signer, message, signature), "Invalid Signature.");
 
         // check for replay attack (message can be used only once)
-        require(!usedMessages[message], "Message already used.");
-        usedMessages[message] = true;
+        require(!usedMessages[message], "[OpenChannel] Message already used.");
 
         channels[nextChannelId] = PaymentChannel({
             nonce        : 0,
@@ -148,15 +147,17 @@ contract MultiPartyEscrow {
             expiration   : expiration
         });
 
-        // Transferring Fees to ThirdParty
-        balances[signer] = balances[signer].sub(fees);
-        balances[msg.sender] = balances[msg.sender].add(fees);
+        // Transferring Fee to ThirdParty
+        balances[signer] = balances[signer].sub(fee);
+        balances[msg.sender] = balances[msg.sender].add(fee);
 
         // Transferring to Channel
         balances[signer] = balances[signer].sub(value);
 
-        emit ChannelOpenByThirdParty(nextChannelId, 0, msg.sender, signer, recipient, groupId, value, expiration, fees, messageNonce);
+        emit ChannelOpenByThirdParty(nextChannelId, 0, msg.sender, signer, recipient, groupId, value, expiration, fee, messageNonce);
+
         nextChannelId += 1;
+        usedMessages[message] = true;
         return true;
     }
 
@@ -306,5 +307,33 @@ contract MultiPartyEscrow {
     function prefixed(bytes32 hash) internal pure returns (bytes32)
     {
         return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+    }
+
+    // Paying Gas for user
+    function depositByThirdParty(address signer, uint256 value, uint256 fee, uint256 messageNonce, bytes memory signature)
+    public
+    {
+        require(token.balanceOf(signer) >= value + fee, "Insufficient funds at Signer wallet.");
+        bytes32 message = prefixed(keccak256(abi.encodePacked(this, msg.sender, signer, value, fee, messageNonce)));
+        require(checkSignature(signer, message, signature), "Invalid Signature.");
+
+        require(signer != address(0));
+
+        // check for replay attack (message can be used only once)
+        require(!usedMessages[message], "[depositByThirdParty] Message already used.");
+
+        // Execute the original approve function
+        // token._allowed[signer][this] = value;
+        // emit token.Approval(signer, this, value);
+
+        require(token.approve(signer, value + fee), "[depositByThirdParty] Not Approved.");
+        deposit(signer, value + fee);
+
+        require(balances[signer] >= value + fee, "Insufficient funds at Signer MPE wallet.");
+        // Transferring Fee to ThirdParty
+        balances[signer] = balances[signer].sub(fee);
+        balances[msg.sender] = balances[msg.sender].add(fee);
+
+        usedMessages[message] = true;
     }
 }
